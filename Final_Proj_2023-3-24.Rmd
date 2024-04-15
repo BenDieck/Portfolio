@@ -1,0 +1,672 @@
+---
+title: "Final_Project"
+output: html_document
+date: "2023-03-19"
+---
+#Erik Newcome, Justin Richardson, Ben Dieck
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(pacman)
+library(ggplot2)
+library(caret)
+library(dplyr)
+library(tidyverse)
+library(jsonlite)
+library(corrplot)
+library(fastDummies)
+library(tidyr)
+library(arules)
+library(arulesViz)
+library(RColorBrewer)
+library(ggthemes)
+library(RcmdrMisc)
+library(DALEX)
+library(tibble)
+library(purrr)
+library(tidyquant)
+
+```
+
+## IBM Attrition Dataset
+
+#Read in the data
+
+```{r}
+### Pulls in data
+urlToRead <- "https://raw.githubusercontent.com/IBM/employee-attrition-aif360/master/data/emp_attrition.csv"
+IBMdata <- read_csv(url(urlToRead))
+### Makes Attrition a binary value
+IBMdata$Attrition <- ifelse(IBMdata$Attrition=="Yes",1,0)
+```
+
+#Create a set that only have dummies. 
+
+```{r}
+library(fastDummies)
+
+
+ibm_for_dummies <- dummy_cols(IBMdata, select_columns = 'BusinessTravel')
+
+ibm_for_dummies <- dummy_cols(ibm_for_dummies, select_columns = 'Department')
+
+ibm_for_dummies <- dummy_cols(ibm_for_dummies, select_columns = 'EducationField')
+
+ibm_for_dummies <- dummy_cols(ibm_for_dummies, select_columns = 'Gender')
+
+ibm_for_dummies <- dummy_cols(ibm_for_dummies, select_columns = 'JobRole')
+
+ibm_for_dummies <- dummy_cols(ibm_for_dummies, select_columns = 'MaritalStatus')
+
+ibm_for_dummies <- dummy_cols(ibm_for_dummies, select_columns = 'OverTime')
+
+ibm_for_dummies <- dummy_cols(ibm_for_dummies, select_columns = 'Over18')
+
+drp <- c('BusinessTravel','Department','EducationField','Gender',
+         'JobRole','MaritalStatus','OverTime','Over18')
+
+ibm_for_dummies <- ibm_for_dummies[,!names(ibm_for_dummies)%in%drp]
+
+ibm_for_dummies <- data.frame(ibm_for_dummies)
+
+```
+
+#Sub-Sets
+```{r}
+### Separate by department
+HRSet <- IBMdata[IBMdata$Department == "Human Resources",]
+SalesSet <- IBMdata[IBMdata$Department == "Sales",]
+RDSet <- IBMdata[IBMdata$Department == "Research & Development",]
+### Isolate people who stay vs leave
+isoStay.attrition <- IBMdata[IBMdata$Attrition == 0,]
+isoLeft.attrition <- IBMdata[IBMdata$Attrition == 1,]
+## People who leave that have been working less than 6 years. 
+stay3 <- isoStay.attrition[isoStay.attrition$TotalWorkingYears<6,]
+```
+
+## Q1
+1.Is there higher turnover among junior employees (2 years or less) vs. Sr. employee (2+ years)? 
+Why might this be? Is it only salary, or are there other factors besides money that might be adjusted to reduce turnover while preserve the bottom line?
+
+```{r}
+#Assessment chart 1, 
+# Shows high saturation of quttting in early years of employment, single people, and with high work / life balance. 
+g <- ggplot(SalesSet) + 
+  aes(x=TotalWorkingYears, y=MonthlyIncome,
+      size=WorkLifeBalance, color=Attrition, shape = MaritalStatus) +
+  geom_point(alpha = 0.5) + scale_color_continuous(name="Attrition", low = "black", high ='red')+ theme_fivethirtyeight()
+
+g
+```
+
+```{r}
+## Highest concentration are leaving prior to three years with the company. 
+
+attr_small <- ggplot(IBMdata) + 
+  aes(x=TotalWorkingYears, y=YearsAtCompany,
+      color=Attrition ) +
+  geom_point(alpha = 0.5) + scale_color_continuous(name="Attrition", low = "black", high ='#00ff00')+
+  scale_x_continuous(n.breaks = 15) + scale_y_continuous(n.breaks = 8)+ theme_fivethirtyeight()
+
+attr_small
+```
+
+```{r}
+#These trend towards low earners, and people within the first 3-6 years of their professional life. 
+# Specifically three years.
+
+attr_year <- ggplot(IBMdata) + 
+  aes(x=TotalWorkingYears, y=MonthlyIncome,
+      color=Attrition ) +
+  geom_point(alpha = 0.5) + scale_color_continuous(name="Attrition", low = "black", high ='#00ff00')+
+  scale_x_continuous(n.breaks = 15) + scale_y_continuous(n.breaks = 8)+ theme_fivethirtyeight()
+
+attr_year
+```
+
+```{r}
+##Individuals within their first 6 years that are staying report a high work life balance, trend towards not being single, and have been promoted in the past 2 years. 
+
+those.who.stay <- ggplot(stay3) + 
+  aes(x=TotalWorkingYears, y=MonthlyIncome,
+      size=WorkLifeBalance, color=YearsSinceLastPromotion, shape = MaritalStatus) +
+  geom_point(alpha = 0.7)+ theme_fivethirtyeight() 
+
+those.who.stay
+```
+
+```{r}
+### Leaving from the RD department in the first year, they are working OverTime
+### generally they are satisfied with their job but making less than 3K a month. 
+## They have 1 total working year. 
+
+leave3 <- isoLeft.attrition[isoLeft.attrition$TotalWorkingYears<6,]
+those.who.leave <- ggplot(leave3) + 
+  aes(x=TotalWorkingYears, y=MonthlyIncome,
+      size=JobSatisfaction, color=Department, shape = OverTime) +
+  geom_point(alpha = 0.7)+ theme_fivethirtyeight() 
+
+those.who.leave
+```
+
+## Q2
+2. Is there a typecast of employee that, on average, will stay with the company over time? 
+What do they look like, what attributes do they have?
+
+#Create a set that has factors
+
+```{r, include = FALSE}
+isoStay.t <- data.frame(isoStay.attrition)
+
+##### 1. To convert, all numbers / strings need to be converted to factors.
+isoStay.t$Age <- as.factor(isoStay.t$Age)
+isoStay.t$Attrition <- as.factor(isoStay.t$Attrition)
+isoStay.t$BusinessTravel<- as.factor(isoStay.t$BusinessTravel)
+isoStay.t$DailyRate <- as.factor(isoStay.t$DailyRate)
+isoStay.t$Department<- as.factor(isoStay.t$Department)
+isoStay.t$DistanceFromHome<- as.factor(isoStay.t$DistanceFromHome)
+isoStay.t$Education<- as.factor(isoStay.t$Education)
+isoStay.t$EducationField<- as.factor(isoStay.t$EducationField)
+isoStay.t$EnvironmentSatisfaction<- as.factor(isoStay.t$EnvironmentSatisfaction)
+isoStay.t$Gender<- as.factor(isoStay.t$Gender)
+isoStay.t$HourlyRate<- as.factor(isoStay.t$HourlyRate)
+isoStay.t$JobInvolvement<- as.factor(isoStay.t$JobInvolvement)
+isoStay.t$JobLevel<- as.factor(isoStay.t$JobLevel)
+isoStay.t$JobRole<- as.factor(isoStay.t$JobRole)
+isoStay.t$JobSatisfaction<- as.factor(isoStay.t$JobSatisfaction)
+isoStay.t$MaritalStatus<- as.factor(isoStay.t$MaritalStatus)
+isoStay.t$MonthlyIncome<- as.factor(isoStay.t$MonthlyIncome)
+isoStay.t$MonthlyRate<- as.factor(isoStay.t$MonthlyRate)
+isoStay.t$NumCompaniesWorked<- as.factor(isoStay.t$NumCompaniesWorked)
+isoStay.t$Over18<- as.factor(isoStay.t$Over18)
+isoStay.t$OverTime<- as.factor(isoStay.t$OverTime)
+isoStay.t$PercentSalaryHike<- as.factor(isoStay.t$PercentSalaryHike)
+isoStay.t$PerformanceRating<- as.factor(isoStay.t$PerformanceRating)
+isoStay.t$RelationshipSatisfaction<- as.factor(isoStay.t$RelationshipSatisfaction)
+isoStay.t$StandardHours<- as.factor(isoStay.t$StandardHours)
+isoStay.t$StockOptionLevel<- as.factor(isoStay.t$StockOptionLevel)
+isoStay.t$TotalWorkingYears<- as.factor(isoStay.t$TotalWorkingYears)
+isoStay.t$TrainingTimesLastYear<- as.factor(isoStay.t$TrainingTimesLastYear)
+isoStay.t$WorkLifeBalance<- as.factor(isoStay.t$WorkLifeBalance)
+isoStay.t$YearsInCurrentRole<- as.factor(isoStay.t$YearsInCurrentRole)
+isoStay.t$YearsSinceLastPromotion<- as.factor(isoStay.t$YearsSinceLastPromotion)
+isoStay.t$YearsWithCurrManager<- as.factor(isoStay.t$YearsWithCurrManager)
+isoStay.t$YearsAtCompany<- as.factor(isoStay.t$YearsAtCompany)
+## Remove Age and Years Working
+isoStay.t<- isoStay.t[,-9:-10]
+## Remove Salary and things I don't like...
+isoStay.t<- isoStay.t[,-1] # Age
+isoStay.t<- isoStay.t[,-3]# Daily Rate
+isoStay.t<- isoStay.t[,-9]# Hourly Rate
+isoStay.t<- isoStay.t[,-14:-15]# Monthly Rate
+isoStay.t<- isoStay.t[,-15]#Over18
+isoStay.t<- isoStay.t[,-19]#Standard Hours
+
+```
+
+
+```{r}
+isoStay_trans <- as(isoStay.t,"transactions")
+str(isoStay_trans)
+
+itemFrequencyPlot(isoStay_trans, support = 0.4, cex.names = 0.8, col = brewer.pal(8,'Dark2'))
+```
+
+
+```{r, include = FALSE}
+#### HA! You can keep the salaries in the code and it doesn't affect the output.
+### I should probably make these functions. 
+
+isoStay.t <- data.frame(isoStay.attrition)
+
+##### 1. To convert, all numbers / strings need to be converted to factors.
+isoStay.t$Age <- as.factor(isoStay.t$Age)
+isoStay.t$Attrition <- as.factor(isoStay.t$Attrition)
+isoStay.t$BusinessTravel<- as.factor(isoStay.t$BusinessTravel)
+isoStay.t$DailyRate <- as.factor(isoStay.t$DailyRate)
+isoStay.t$Department<- as.factor(isoStay.t$Department)
+isoStay.t$DistanceFromHome<- as.factor(isoStay.t$DistanceFromHome)
+isoStay.t$Education<- as.factor(isoStay.t$Education)
+isoStay.t$EducationField<- as.factor(isoStay.t$EducationField)
+isoStay.t$EnvironmentSatisfaction<- as.factor(isoStay.t$EnvironmentSatisfaction)
+isoStay.t$Gender<- as.factor(isoStay.t$Gender)
+isoStay.t$HourlyRate<- as.factor(isoStay.t$HourlyRate)
+isoStay.t$JobInvolvement<- as.factor(isoStay.t$JobInvolvement)
+isoStay.t$JobLevel<- as.factor(isoStay.t$JobLevel)
+isoStay.t$JobRole<- as.factor(isoStay.t$JobRole)
+isoStay.t$JobSatisfaction<- as.factor(isoStay.t$JobSatisfaction)
+isoStay.t$MaritalStatus<- as.factor(isoStay.t$MaritalStatus)
+isoStay.t$MonthlyIncome<- as.factor(isoStay.t$MonthlyIncome)
+isoStay.t$MonthlyRate<- as.factor(isoStay.t$MonthlyRate)
+isoStay.t$NumCompaniesWorked<- as.factor(isoStay.t$NumCompaniesWorked)
+isoStay.t$Over18<- as.factor(isoStay.t$Over18)
+isoStay.t$OverTime<- as.factor(isoStay.t$OverTime)
+isoStay.t$PercentSalaryHike<- as.factor(isoStay.t$PercentSalaryHike)
+isoStay.t$PerformanceRating<- as.factor(isoStay.t$PerformanceRating)
+isoStay.t$RelationshipSatisfaction<- as.factor(isoStay.t$RelationshipSatisfaction)
+isoStay.t$StandardHours<- as.factor(isoStay.t$StandardHours)
+isoStay.t$StockOptionLevel<- as.factor(isoStay.t$StockOptionLevel)
+isoStay.t$TotalWorkingYears<- as.factor(isoStay.t$TotalWorkingYears)
+isoStay.t$TrainingTimesLastYear<- as.factor(isoStay.t$TrainingTimesLastYear)
+isoStay.t$WorkLifeBalance<- as.factor(isoStay.t$WorkLifeBalance)
+isoStay.t$YearsInCurrentRole<- as.factor(isoStay.t$YearsInCurrentRole)
+isoStay.t$YearsSinceLastPromotion<- as.factor(isoStay.t$YearsSinceLastPromotion)
+isoStay.t$YearsWithCurrManager<- as.factor(isoStay.t$YearsWithCurrManager)
+isoStay.t$YearsAtCompany<- as.factor(isoStay.t$YearsAtCompany)
+## Remove Employee Count and Number
+isoStay.t<- isoStay.t[,-9:-10]
+## Remove Salary and things I don't like...
+isoStay.t<- isoStay.t[,-1] # Age
+isoStay.t<- isoStay.t[,-19]#Over18
+isoStay.t<- isoStay.t[,-23]#Standard Hours
+
+
+```
+
+
+```{r}
+### as() convert to something, instead of a as.function, the second argument,
+### transactions says we want to convert it to a transaction.
+#### 2. Convert to transaction
+isoStay_trans <- as(isoStay.t,"transactions")
+str(isoStay_trans)
+
+itemFrequencyPlot(isoStay_trans, support = 0.4, cex.names = 0.8, col= brewer.pal(11,'Spectral'))
+```
+
+## Q3
+3.Is there a typecast that is most likely to leave the company? 
+# What do they look like, what attributes do they have?
+
+```{r}
+isoLeft.t <- data.frame(isoLeft.attrition)
+
+##### 1. To convert, all numbers / strings need to be converted to factors.
+isoLeft.t$Age <- as.factor(isoLeft.t$Age)
+isoLeft.t$Attrition <- as.factor(isoLeft.t$Attrition)
+isoLeft.t$BusinessTravel<- as.factor(isoLeft.t$BusinessTravel)
+isoLeft.t$DailyRate <- as.factor(isoLeft.t$DailyRate)
+isoLeft.t$Department<- as.factor(isoLeft.t$Department)
+isoLeft.t$DistanceFromHome<- as.factor(isoLeft.t$DistanceFromHome)
+isoLeft.t$Education<- as.factor(isoLeft.t$Education)
+isoLeft.t$EducationField<- as.factor(isoLeft.t$EducationField)
+isoLeft.t$EnvironmentSatisfaction<- as.factor(isoLeft.t$EnvironmentSatisfaction)
+isoLeft.t$Gender<- as.factor(isoLeft.t$Gender)
+isoLeft.t$HourlyRate<- as.factor(isoLeft.t$HourlyRate)
+isoLeft.t$JobInvolvement<- as.factor(isoLeft.t$JobInvolvement)
+isoLeft.t$JobLevel<- as.factor(isoLeft.t$JobLevel)
+isoLeft.t$JobRole<- as.factor(isoLeft.t$JobRole)
+isoLeft.t$JobSatisfaction<- as.factor(isoLeft.t$JobSatisfaction)
+isoLeft.t$MaritalStatus<- as.factor(isoLeft.t$MaritalStatus)
+isoLeft.t$MonthlyIncome<- as.factor(isoLeft.t$MonthlyIncome)
+isoLeft.t$MonthlyRate<- as.factor(isoLeft.t$MonthlyRate)
+isoLeft.t$NumCompaniesWorked<- as.factor(isoLeft.t$NumCompaniesWorked)
+isoLeft.t$Over18<- as.factor(isoLeft.t$Over18)
+isoLeft.t$OverTime<- as.factor(isoLeft.t$OverTime)
+isoLeft.t$PercentSalaryHike<- as.factor(isoLeft.t$PercentSalaryHike)
+isoLeft.t$PerformanceRating<- as.factor(isoLeft.t$PerformanceRating)
+isoLeft.t$RelationshipSatisfaction<- as.factor(isoLeft.t$RelationshipSatisfaction)
+isoLeft.t$StandardHours<- as.factor(isoLeft.t$StandardHours)
+isoLeft.t$StockOptionLevel<- as.factor(isoLeft.t$StockOptionLevel)
+isoLeft.t$TotalWorkingYears<- as.factor(isoLeft.t$TotalWorkingYears)
+isoLeft.t$TrainingTimesLastYear<- as.factor(isoLeft.t$TrainingTimesLastYear)
+isoLeft.t$WorkLifeBalance<- as.factor(isoLeft.t$WorkLifeBalance)
+isoLeft.t$YearsInCurrentRole<- as.factor(isoLeft.t$YearsInCurrentRole)
+isoLeft.t$YearsSinceLastPromotion<- as.factor(isoLeft.t$YearsSinceLastPromotion)
+isoLeft.t$YearsWithCurrManager<- as.factor(isoLeft.t$YearsWithCurrManager)
+isoLeft.t$YearsAtCompany<- as.factor(isoLeft.t$YearsAtCompany)
+## Remove Age and Years Working
+isoLeft.t<- isoLeft.t[,-9:-10]
+## Remove Salary and things I don't like...
+isoLeft.t <- isoLeft.t[,-1] # Age
+isoLeft.t <- isoLeft.t[,-3]# Daily Rate
+isoLeft.t <- isoLeft.t[,-9]# Hourly Rate
+isoLeft.t <- isoLeft.t[,-14:-15]# Monthly Rate
+isoLeft.t<- isoLeft.t[,-15]#Over18
+isoLeft.t <-isoLeft.t[,-19]#Standard Hours
+
+### as() convert to something, instead of a as.function, the second argument,
+### transactions says we want to convert it to a transaction.
+#### 2. Convert to transaction
+isoLeft_trans <- as(isoLeft.t,"transactions")
+
+```
+
+```{r}
+itemFrequencyPlot(isoLeft_trans, support = 0.4, cex.names = 0.8, col = brewer.pal(8,'Set3'))
+```
+#Isolate the same behaviors but for junior employees that have left the company.
+
+```{r}
+
+ years3 <- isoLeft.attrition[isoLeft.attrition$YearsAtCompany<3,]
+
+isoLeft.t <- data.frame(years3)
+
+##### To convert, all numbers / strings need to be converted to factors.
+isoLeft.t$Age <- as.factor(isoLeft.t$Age)
+isoLeft.t$Attrition <- as.factor(isoLeft.t$Attrition)
+isoLeft.t$BusinessTravel<- as.factor(isoLeft.t$BusinessTravel)
+isoLeft.t$DailyRate <- as.factor(isoLeft.t$DailyRate)
+isoLeft.t$Department<- as.factor(isoLeft.t$Department)
+isoLeft.t$DistanceFromHome<- as.factor(isoLeft.t$DistanceFromHome)
+isoLeft.t$Education<- as.factor(isoLeft.t$Education)
+isoLeft.t$EducationField<- as.factor(isoLeft.t$EducationField)
+isoLeft.t$EnvironmentSatisfaction<- as.factor(isoLeft.t$EnvironmentSatisfaction)
+isoLeft.t$Gender<- as.factor(isoLeft.t$Gender)
+isoLeft.t$HourlyRate<- as.factor(isoLeft.t$HourlyRate)
+isoLeft.t$JobInvolvement<- as.factor(isoLeft.t$JobInvolvement)
+isoLeft.t$JobLevel<- as.factor(isoLeft.t$JobLevel)
+isoLeft.t$JobRole<- as.factor(isoLeft.t$JobRole)
+isoLeft.t$JobSatisfaction<- as.factor(isoLeft.t$JobSatisfaction)
+isoLeft.t$MaritalStatus<- as.factor(isoLeft.t$MaritalStatus)
+isoLeft.t$MonthlyIncome<- as.factor(isoLeft.t$MonthlyIncome)
+isoLeft.t$MonthlyRate<- as.factor(isoLeft.t$MonthlyRate)
+isoLeft.t$NumCompaniesWorked<- as.factor(isoLeft.t$NumCompaniesWorked)
+isoLeft.t$Over18<- as.factor(isoLeft.t$Over18)
+isoLeft.t$OverTime<- as.factor(isoLeft.t$OverTime)
+isoLeft.t$PercentSalaryHike<- as.factor(isoLeft.t$PercentSalaryHike)
+isoLeft.t$PerformanceRating<- as.factor(isoLeft.t$PerformanceRating)
+isoLeft.t$RelationshipSatisfaction<- as.factor(isoLeft.t$RelationshipSatisfaction)
+isoLeft.t$StandardHours<- as.factor(isoLeft.t$StandardHours)
+isoLeft.t$StockOptionLevel<- as.factor(isoLeft.t$StockOptionLevel)
+isoLeft.t$TotalWorkingYears<- as.factor(isoLeft.t$TotalWorkingYears)
+isoLeft.t$TrainingTimesLastYear<- as.factor(isoLeft.t$TrainingTimesLastYear)
+isoLeft.t$WorkLifeBalance<- as.factor(isoLeft.t$WorkLifeBalance)
+isoLeft.t$YearsInCurrentRole<- as.factor(isoLeft.t$YearsInCurrentRole)
+isoLeft.t$YearsSinceLastPromotion<- as.factor(isoLeft.t$YearsSinceLastPromotion)
+isoLeft.t$YearsWithCurrManager<- as.factor(isoLeft.t$YearsWithCurrManager)
+isoLeft.t$YearsAtCompany<- as.factor(isoLeft.t$YearsAtCompany)
+## Remove Age and Years Working
+isoLeft.t<- isoLeft.t[,-9:-10]
+## Remove Salary and things I don't like...
+isoLeft.t <- isoLeft.t[,-1] # Age
+isoLeft.t <- isoLeft.t[,-3]# Daily Rate
+isoLeft.t <- isoLeft.t[,-9]# Hourly Rate
+isoLeft.t <- isoLeft.t[,-14:-15]# Monthly Rate
+isoLeft.t<- isoLeft.t[,-15]#Over18
+isoLeft.t <-isoLeft.t[,-19]#Standard Hours
+
+### as() convert to something, instead of a as.function, the second argument,
+### transactions says we want to convert it to a transaction.
+#### 2. Convert to transaction
+isoLeft_3Yrs <- as(isoLeft.t,"transactions")
+
+```
+
+```{r}
+itemFrequencyPlot(isoLeft_3Yrs, support = 0.4, cex.names = 0.8, col = brewer.pal(8,'Set2'))
+```
+
+# Generate rules for leaving with Associative Rules Datamining
+
+```{r}
+IBM.t <- IBMdata
+
+##### 1. To convert, all numbers / strings need to be converted to factors.
+IBM.t$Age <- as.factor(IBM.t$Age)
+IBM.t$Attrition <- as.factor(IBM.t$Attrition)
+IBM.t$BusinessTravel<- as.factor(IBM.t$BusinessTravel)
+IBM.t$DailyRate <- as.factor(IBM.t$DailyRate)
+IBM.t$Department<- as.factor(IBM.t$Department)
+IBM.t$DistanceFromHome<- as.factor(IBM.t$DistanceFromHome)
+IBM.t$Education<- as.factor(IBM.t$Education)
+IBM.t$EducationField<- as.factor(IBM.t$EducationField)
+IBM.t$EnvironmentSatisfaction<- as.factor(IBM.t$EnvironmentSatisfaction)
+IBM.t$Gender<- as.factor(IBM.t$Gender)
+IBM.t$HourlyRate<- as.factor(IBM.t$HourlyRate)
+IBM.t$JobInvolvement<- as.factor(IBM.t$JobInvolvement)
+IBM.t$JobLevel<- as.factor(IBM.t$JobLevel)
+IBM.t$JobRole<- as.factor(IBM.t$JobRole)
+IBM.t$JobSatisfaction<- as.factor(IBM.t$JobSatisfaction)
+IBM.t$MaritalStatus<- as.factor(IBM.t$MaritalStatus)
+IBM.t$MonthlyIncome<- as.factor(IBM.t$MonthlyIncome)
+IBM.t$MonthlyRate<- as.factor(IBM.t$MonthlyRate)
+IBM.t$NumCompaniesWorked<- as.factor(IBM.t$NumCompaniesWorked)
+IBM.t$Over18<- as.factor(IBM.t$Over18)
+IBM.t$OverTime<- as.factor(IBM.t$OverTime)
+IBM.t$PercentSalaryHike<- as.factor(IBM.t$PercentSalaryHike)
+IBM.t$PerformanceRating<- as.factor(IBM.t$PerformanceRating)
+IBM.t$RelationshipSatisfaction<- as.factor(IBM.t$RelationshipSatisfaction)
+IBM.t$StandardHours<- as.factor(IBM.t$StandardHours)
+IBM.t$StockOptionLevel<- as.factor(IBM.t$StockOptionLevel)
+IBM.t$TotalWorkingYears<- as.factor(IBM.t$TotalWorkingYears)
+IBM.t$TrainingTimesLastYear<- as.factor(IBM.t$TrainingTimesLastYear)
+IBM.t$WorkLifeBalance<- as.factor(IBM.t$WorkLifeBalance)
+IBM.t$YearsInCurrentRole<- as.factor(IBM.t$YearsInCurrentRole)
+IBM.t$YearsSinceLastPromotion<- as.factor(IBM.t$YearsSinceLastPromotion)
+IBM.t$YearsWithCurrManager<- as.factor(IBM.t$YearsWithCurrManager)
+IBM.t$YearsAtCompany<- as.factor(IBM.t$YearsAtCompany)
+## Remove Age and Years Working
+IBM.t<- IBM.t[,-9:-10]
+## Remove Salary and things I don't like...
+IBM.t<- IBM.t[,-1] # Age
+IBM.t<- IBM.t[,-3]# Daily Rate
+IBM.t<- IBM.t[,-9]# Hourly Rate
+IBM.t<- IBM.t[,-14:-15]# Monthly Rate
+IBM.t<- IBM.t[,-15]#Over18
+IBM.t<- IBM.t[,-19]#Standard Hours
+
+
+##Make IBM list a transaction list. 
+
+IBM_trans <- as(IBM.t,"transactions")
+
+```
+
+```{r}
+### How often does any of this stuff occur within the dataset? 
+
+IBM_means <- rowMeans(IBM_trans@data)
+IBM_labels <- IBM_trans@itemInfo$labels
+IBM_levels <- IBM_trans@itemInfo$levels
+
+IBM_df <- data.frame(IBM_means, IBM_labels, IBM_levels)
+```
+
+```{r}
+### Would you look at that, What percentage of the company is staying or leaving. 
+IBM_df[1:2,]
+
+```
+
+```{r}
+#Most common factors across the whole set. 
+IBM_desc_df <- IBM_df[order(-(IBM_df$IBM_means)),]
+head(IBM_desc_df, 20)
+
+```
+
+# Associative rules for interactions between factorials across the data set.
+```{r}
+IBM_rules <- apriori(IBM_trans, parameter = list(support = 0.09, confidence = 0.6))
+
+par(mfrow=c(1,1))
+plot(IBM_rules)+ 
+  scale_color_gradient(low = "lightblue", high = "red")
+
+```
+
+# Isolated rules that had high lift.
+```{r}
+goodRules <- IBM_rules[quality(IBM_rules)$lift >4]
+
+plot(goodRules)+ 
+  scale_color_gradient(low = "lightblue", high = "red")
+
+```
+
+# Rules for when people leave the company:
+```{r}
+LeaveRules <- apriori(IBM_trans, parameter = list(support = 0.04, confidence = 0.3), 
+                     appearance=list(rhs='Attrition=1'))
+
+inspect(LeaveRules)
+```
+
+
+
+```{r}
+top.confidence <- sort(LeaveRules, decreasing = TRUE, na.last = NA, by = "confidence")
+
+inspect(top.confidence)
+```
+
+```{r}
+plot(LeaveRules, method = 'graph', control = list(type='items'))+ 
+  scale_color_gradient(low = "lightblue", high = "red")+ labs(title = "Attributes of Known Losses")
+```
+
+
+
+## Q4
+4. What is the total relationship between compensation, and retention In a regression study, 
+and predictive analysis, what would be the R2 value of total compensation in explaining attrition behavior?
+
+```{r}
+data_cor <- cor(ibm_for_dummies[ , colnames(ibm_for_dummies) != "Attrition"], 
+                ibm_for_dummies$Attrition)
+
+data_cor
+```
+Linear Model for RnD
+
+```{r}
+#LM predicting all num values in relationship to comp (MonthlyIncome)
+
+RDcomp_retentionLM = lm(MonthlyIncome ~ Age + Education + JobSatisfaction + NumCompaniesWorked + PercentSalaryHike + PerformanceRating + RelationshipSatisfaction + StockOptionLevel + TotalWorkingYears + 
+                          TrainingTimesLastYear + WorkLifeBalance + YearsAtCompany + YearsInCurrentRole + 
+                          YearsSinceLastPromotion + YearsWithCurrManager, data = RDSet)
+
+#for R&D
+summary(RDcomp_retentionLM) #R2 0.5901, P-value 2.2 e-16, stat rel TotalWorkingYears and a bit of WorkLifeBalance
+
+```
+
+
+```{r}
+#R&D Plot
+ggplot(RDSet, aes(x=YearsAtCompany, y=MonthlyIncome)) + 
+  geom_point(alpha = .8, size = 3, aes(color=JobRole, shape = as.factor(Attrition))) + facet_grid(~JobRole) + 
+  scale_shape_manual(values = c(10,17),) + ggtitle("R&D Dept")
+```
+
+Linear Model for Sales
+
+```{r}
+Salescomp_retentionLM = lm(MonthlyIncome ~ Age + Education + JobSatisfaction + NumCompaniesWorked + PercentSalaryHike + 
+                          PerformanceRating + RelationshipSatisfaction + StockOptionLevel + TotalWorkingYears + 
+                          TrainingTimesLastYear + WorkLifeBalance + YearsAtCompany + YearsInCurrentRole + 
+                          YearsSinceLastPromotion + YearsWithCurrManager, data = SalesSet)
+
+#for Sales
+summary(Salescomp_retentionLM) #R2 .6167, P-value 2.2 e-16, stat rel TotalWorkingYears, years in current role and years with mgr
+```
+
+```{r}
+#Sales Plot
+ggplot(SalesSet, aes(x=YearsAtCompany, y=MonthlyIncome)) + 
+  geom_point(alpha = .8, size = 3, aes(color=JobRole, shape = as.factor(Attrition))) + facet_grid(~JobRole) + 
+  scale_shape_manual(values = c(10,17),) + ggtitle("Sales Dept")
+
+```
+
+Linear Model for Human Resources
+```{r}
+HRcomp_retentionLM = lm(MonthlyIncome ~ Age + Education + JobSatisfaction + NumCompaniesWorked + PercentSalaryHike + 
+                             PerformanceRating + RelationshipSatisfaction + StockOptionLevel + TotalWorkingYears + 
+                             TrainingTimesLastYear + WorkLifeBalance + YearsAtCompany + YearsInCurrentRole + 
+                             YearsSinceLastPromotion + YearsWithCurrManager, data = HRSet)
+
+#for HR
+summary(HRcomp_retentionLM) #R2 .779, P-value 2.116 e-13, stat rel TotalWorkingYears
+```
+
+
+```{r}
+#HR Plot
+ggplot(HRSet, aes(x=YearsAtCompany, y=MonthlyIncome)) + 
+  geom_point(alpha = .8, size = 3, aes(color=JobRole, shape = as.factor(Attrition))) + facet_grid(~JobRole) + 
+  scale_shape_manual(values = c(10,17),) + ggtitle("HR Dept")
+```
+
+Plot for all IBM
+```{r}
+#All Employees
+ggplot(IBMdata, aes(x=YearsAtCompany, y=MonthlyIncome)) + 
+  geom_point(alpha = .8, size = 3, aes(color=JobRole, shape = as.factor(Attrition))) + facet_grid(~JobRole) + 
+  scale_shape_manual(values = c(10,17),) + ggtitle("All IBM")
+
+
+# summary: total working years was common among all groups as the most significant indicator for total 
+# compensation, relative to position at company
+```
+
+
+
+## Q5
+5. Is there an even correlation between salary , age, education, years with the company? 
+
+```{r}
+##### IBM stock options do not impact employee retention.
+
+h <- ggplot(SalesSet) + 
+  aes(x=Age, y=MonthlyIncome,
+      size=PercentSalaryHike, color=Attrition, shape = as.factor(StockOptionLevel)) +
+  geom_point(alpha = 0.5) + scale_color_continuous(name="Attrition", low = "black", high ='blue')
+
+h
+```
+
+
+```{r}
+XP_List <- c('MonthlyRate','Age','Education','Gender_Female','Gender_Male',
+             'YearsAtCompany','YearsInCurrentRole')
+XP_dummies <- ibm_for_dummies[,names(ibm_for_dummies)%in%XP_List]
+corrplot(cor(XP_dummies))
+```
+
+
+```{r}
+Just_List <- c('JobLevel','Age','Education','Gender_Female','Gender_Male',
+               'YearsAtCompany','YearsInCurrentRole','YearsAtCompany','YearsInCurrentRole')
+
+Just_dummies<- ibm_for_dummies[,names(ibm_for_dummies)%in%Just_List]
+corrplot(cor(Just_dummies))
+```
+##Generate Linear Model
+
+```{r}
+model_IBM <- IBMdata
+model_IBM <- model_IBM[,-22] #Over18
+model_IBM <- model_IBM[,-9] #EmployeeCount
+model_IBM$OverTime <- as.factor(model_IBM$OverTime)
+model_IBM$MaritalStatus <- as.factor(model_IBM$MaritalStatus)
+model_IBM$JobRole <- as.factor(model_IBM$JobRole)
+model_IBM$Gender<- as.factor(model_IBM$Gender)
+model_IBM$EducationField <- as.factor(model_IBM$EducationField)
+model_IBM$Department <- as.factor(model_IBM$Department)
+model_IBM$BusinessTravel <- as.factor(model_IBM$BusinessTravel)
+
+lm_model = lm(Attrition ~ ., data = model_IBM)
+
+summary(lm_model)
+
+```
+
+```{r}
+clean_IBM_model <- model_IBM
+clean_IBM_model <- clean_IBM_model[,-4:-5] #DairlyRate, Department
+clean_IBM_model <- clean_IBM_model[,-5:-7] #Education, EducationField, EmployeeNumber
+clean_IBM_model <- clean_IBM_model[,-7] #Hourly, 
+clean_IBM_model <- clean_IBM_model[,-8] #Job Level
+clean_IBM_model <- clean_IBM_model[,-11:-12] #MonthlyRate, MonthlyIncome
+clean_IBM_model <- clean_IBM_model[,-13:-14] #Percent Salary Hike, Perf Rating
+clean_IBM_model <- clean_IBM_model[,-15:-16] #Stock Option, Total Working Years
+
+clean_model = lm(Attrition ~ ., data = clean_IBM_model)
+
+summary(clean_model)
+
+```
