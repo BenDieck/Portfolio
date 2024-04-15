@@ -5,3 +5,10 @@ I have likely included poor citation, and incorrect citation within my artifacts
 I'm still learning how to use this site. 
 
 Message me and I'll try to help. :)
+
+15APR2024-
+Final_Proj_2023-3-24 is an analysis of the IBM attrition dataset. The original dataset should be available online and the retrievable is in the code. 
+It was compiled by three authors, myself, Mr. Justin Richardson, and Mr. Erik Newcome
+
+Fun project that included a lot of really great visualizations because we had a proffessor that taught the visualization course. So we made our final picture heavy. 
+It worked. 
