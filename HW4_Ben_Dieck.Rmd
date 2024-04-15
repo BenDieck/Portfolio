@@ -1,0 +1,266 @@
+---
+title: "HW4_Federalist-Papers"
+author: "Ben Dieck"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load Muckrakers
+```{r}
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(factoextra)
+library(cluster)
+
+```
+
+## Load Data 
+Creating a corpus of the dataset
+
+```{r}
+fedpapers <- read.csv("C:/R/data/fedPapers85.csv")
+fedpapers2<-fedpapers
+str(fedpapers)
+
+```
+
+Look for NA
+
+```{r}
+sum(is.na(fedpapers))
+```
+Take a peak
+
+```{r}
+head(fedpapers)
+```
+
+So in this case we have 85 federalist papers and 72 possible words in each one which means that this data is already cleaned. Thank god.  
+
+```{r}
+fedpapers2 <- fedpapers2[,2:72]
+fedpapers2 <-select(fedpapers2,filename, upon,all,may,also,even,from,shall,only)
+rownames(fedpapers2)<-fedpapers2[,1]
+fedpapers2[,1]<-NULL
+```
+
+Not sure what I did here but lets see
+
+```{r}
+#had to load the tibble package
+view(fedpapers2)
+```
+
+That made a really finite dataframe... The example says that this is signaling words of the pieces.
+
+```{r}
+#library factoextra
+#Determines the optimal number of clusters, thats cool
+fviz_nbclust(fedpapers, FUN = hcut, method="silhouette")
+```
+
+This already indicates that there are two clear demarcations of where the data should be separated. I guess one of the lasting questions is, how were those words chosen? 
+
+```{r}
+set.seed(20)
+#Running k-means
+clusters <- kmeans(fedpapers2,6)
+str(clusters)
+clusters$centers
+```
+
+Doing some weird stuff
+Making a new data frame that categorizes the information that I harvested into a factoral value, and categorizes each paper by being in that factoral value. But I feel like I am being set up now because there are 6 values and I'm supposed to be figured out which of the 2 authors did what. I'm probably going to have to come back here.
+
+```{r}
+fedpapers_km <- fedpapers
+fedpapers_km$clusters <- as.factor(clusters$cluster)
+fedpapers2$clusters <- as.factor(clusters$cluster)
+```
+
+
+Plotting the results
+
+```{r}
+clusplot(fedpapers2, fedpapers2$clusters, color=TRUE, shade=TRUE, labels=0, lines=0)
+```
+
+```{r}
+#str(MY_fedpapers_km)
+
+```
+
+Determine max distance from other points in signal words
+
+```{r}
+colnames((fedpapers2[,1:8]))[apply((fedpapers2[,1:8]),1,which.max)]
+```
+
+
+
+```{r}
+ggplot(data=fedpapers_km, aes(x=author, fill=clusters))+
+  geom_bar(stat="count")+
+  labs(title="Dispersion of clusters within authors")+
+  theme(plot.title = element_text(hjust=0.5),text=element_text(size=15) )
+```
+
+```{r}
+table(fedpapers_km[,1], fedpapers_km$clusters )
+```
+
+
+
+Seems to me that we need to re-do this without two categories in here. Removing HM and JAY
+
+```{r}
+my_fedpapers<- fedpapers %>%  filter(author=='Hamilton' | author == 'Madison'
+                                     | author == 'dispt')
+
+```
+
+Doing this again
+
+```{r}
+my_fedpapers2 <- my_fedpapers[,2:72]
+my_fedpapers2 <-select(my_fedpapers2,filename, upon,all,may,also,even,from,shall,only)
+rownames(my_fedpapers2)<-my_fedpapers2[,1]
+my_fedpapers2[,1]<-NULL
+```
+
+The ideal clusters shouldn't have changed
+
+```{r}
+fviz_nbclust(fedpapers, FUN = hcut, method="silhouette")
+```
+Run K means for 2 clusters
+
+```{r}
+set.seed(101)
+#Running k-means
+my_clusters <- kmeans(my_fedpapers2,4)
+str(my_clusters)
+my_clusters$centers
+```
+
+```{r}
+MY_fedpapers_km <- my_fedpapers
+MY_fedpapers_km$clusters <- as.factor(my_clusters$cluster)
+my_fedpapers2$clusters <- as.factor(my_clusters$cluster)
+```
+
+Now do the viz
+
+```{r}
+clusplot(my_fedpapers2, my_fedpapers2$clusters, color=TRUE, shade=TRUE, labels=0, lines=0)
+```
+
+We now have clear demarcations between two groups of essays... And the winners are........
+
+```{r}
+ggplot(data=MY_fedpapers_km, aes(x=author, fill=clusters))+
+  geom_bar(stat="count")+
+  labs(title="Dispersion of clusters within authors")+
+  theme(plot.title = element_text(hjust=0.5),text=element_text(size=15) )
+```
+
+
+```{r}
+table(MY_fedpapers_km[,1], MY_fedpapers_km$clusters )
+```
+
+## Hierarchical algorithmic clustering
+
+Establish different measures of distance to test for effect
+#Cleaning
+
+```{r}
+# Remove author names 
+# We're going to use the dataset that I trimmed down to only include the disputed essays and the authors they think authored them.
+FedPapers_HAC <- my_fedpapers[,c(2:72)]
+```
+
+More Cleaning
+
+```{r}
+#The goal is to transform to numerical values for use in HAC 
+#Make the file names the row names so that the files are associated with results
+rownames(FedPapers_HAC) <- FedPapers_HAC[,1]
+FedPapers_HAC[,1] <- NULL
+```
+
+Establish measures of distance using different methods to swap out 
+
+```{r}
+# Calculate distance in a variety of ways
+distance  <- dist(FedPapers_HAC, method = "euclidean")
+distance2 <- dist(FedPapers_HAC, method = "maximum")
+distance3 <- dist(FedPapers_HAC, method = "manhattan")
+distance4 <- dist(FedPapers_HAC, method = "canberra")
+distance5 <- dist(FedPapers_HAC, method = "binary")
+
+#This one errored out
+
+#distance6 <- dist(FedPapers_HAC, method = "minkowski")
+```
+
+Results
+
+```{r}
+
+#Not doing anything for me. 
+HAC <- hclust(distance, method="complete")
+plot(HAC, cex=0.6, hang=-1)
+rect.hclust(HAC, k =3, border=2:5)
+
+HAC
+```
+
+```{r}
+#Not doing anything for me. 
+HAC <- hclust(distance2, method="complete")
+plot(HAC, cex=0.6, hang=-1)
+rect.hclust(HAC, k =9, border=2:5)
+
+HAC
+```
+
+#This one is interesting
+```{r}
+HAC <- hclust(distance3, method="complete")
+plot(HAC, cex=0.6, hang=-1)
+rect.hclust(HAC, k =9, border=2:5)
+
+HAC
+```
+
+#This one is really interesting
+```{r}
+HAC <- hclust(distance4, method="complete")
+plot(HAC, cex=0.6, hang=-1)
+rect.hclust(HAC, k =9, border=2:5)
+
+HAC
+```
+
+#This is good too
+
+```{r}
+HAC <- hclust(distance5, method="complete")
+plot(HAC, cex=0.6, hang=-1)
+rect.hclust(HAC, k =9, border=2:5)
+
+HAC
+```
+
+Determine centroid values??? What are we talking about... 
+
+```{r}
+
+```
+
