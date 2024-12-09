@@ -1,0 +1,854 @@
+---
+title: "Final Project - IST 707"
+author: "Ben Dieck and Tim Tieng"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Load Muckrakers
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(factoextra)
+library(cluster)
+library(arules)
+library(arulesViz)
+library(ggExtra)
+library(CORElearn)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+library(naivebayes)
+library(randomForest)
+library(fastDummies)
+library(FactoMineR)
+library(matrixStats)
+library(class)
+library(sqldf)
+```
+
+
+
+
+
+```{r cars}
+netflix_raw1 <- read.csv("C:/R/data/valid_user_trans2.csv")
+
+str(netflix_raw1)
+
+```
+
+```{r}
+sub_transactions <- netflix_raw1[,22:23]
+str(sub_transactions)
+
+```
+
+
+
+```{r}
+summary(netflix_raw1)
+```
+
+```{r}
+length(unique(sub_transactions$user_id))
+```
+
+
+```{r}
+pl <- ggplot(sub_transactions, aes(x = user_transactions))
+
+#Assigning our geometry layer to a variable for printing.
+pl2 <- pl + geom_histogram(binwidth = 3, color = '#4DAB50', fill ='#ABCAAC',
+                           alpha = .4) +
+  geom_vline(xintercept = quantile(sub_transactions$user_transactions, c(0.025)), linetype = 2, color ="red", linewidth = 1) +
+  geom_vline(xintercept= quantile(sub_transactions$user_transactions, c(0.975)), linetype = 2, color ="red", linewidth =1) + scale_x_continuous(breaks=seq(1,160,by=10))
+# Adjust labeling of the x and y axis.
+pl3<- pl2 + xlab('Number of Transactions') + ylab('Customer Count')
+# Add a title! And a subtitle.
+print(pl3 +ggtitle('Transactions Count', subtitle = 'Metrics on Customer Interaction'))
+```
+
+```{r}
+colnames(netflix_raw1)
+```
+
+
+
+```{r}
+library(corrplot)
+
+corr_dat <- netflix_raw1[,c("release_year","imdb_rating","times.in.set",   "imdb_votes","tmdb_popularity","tmdb_score","run_time","ratio_watched","behavior","user_transactions")]
+
+netflix_edits<- transform(netflix_raw1, genres = as.numeric(as.factor(genres)))
+
+corr_dat$genre <- netflix_edits$genres
+
+netflix_edits<- transform(netflix_raw1, production_country = as.numeric(as.factor(production_country)))
+
+corr_dat$country <- netflix_edits$production_country
+
+
+corrplot(cor(corr_dat))
+```
+
+Create model data
+```{r}
+model_dat <- netflix_raw1[,c("release_year","imdb_rating","times.in.set",   "tmdb_popularity","tmdb_score","run_time"  ,"behavior")]
+
+netflix_edits<- transform(netflix_raw1, genres = as.factor(genres))
+
+model_dat$genre <- netflix_edits$genres
+
+netflix_edits<- transform(netflix_raw1, production_country = as.factor(production_country))
+
+model_dat$country <- netflix_edits$production_country
+
+
+netflix_edits<- transform(netflix_raw1, Cat_Simpl = as.factor(Cat_Simpl))
+
+model_dat$cat_simpl <- netflix_edits$Cat_Simpl
+
+```
+
+
+```{r}
+#str(model_dat)
+
+model_dat$release_year <- factor(model_dat$release_year)
+model_dat$imdb_rating <- factor(model_dat$imdb_rating)
+model_dat$times.in.set <- factor(model_dat$times.in.set)
+model_dat$tmdb_popularity <- factor(model_dat$tmdb_popularity)
+model_dat$run_time <- factor(model_dat$run_time)
+model_dat$behavior <- factor(model_dat$behavior)
+
+
+str(model_dat)
+
+
+
+```
+Discretization
+
+```{r}
+#plotCount(table(model_dat$release_year))
+```
+
+
+
+
+```{r}
+
+##Discretize that thang
+
+model_dat$release_year <- cut(as.numeric(netflix_raw1$release_year), breaks = c(0,2000,2010,2020,Inf),
+                       labels = c('Pre-2000', '00-10' ,'10-20', 'New Release'),
+                       right= F)
+str(model_dat)
+```
+Well, that worked
+
+```{r}
+#plotCount(table(model_dat$imdb_rating))
+```
+
+```{r}
+##Discretize that thang
+
+model_dat$imdb_rating <- cut(as.numeric(netflix_raw1$imdb_rating), breaks = c(0,1,2,3,4,5,6,7,8,9,Inf),
+                       labels = c('0','1', '2' ,'3', '4', '5', '6', '7', '8', '9'),
+                       right= F)
+str(model_dat)
+```
+
+
+```{r}
+pl <- ggplot(netflix_raw1, aes(x = times.in.set))
+pl2 <- pl + geom_histogram(binwidth = 100, color = '#4DAB50', fill ='#ABCAAC',
+                           alpha = .4) +
+  geom_vline(xintercept = quantile(netflix_raw1$times.in.set, c(0.25)), linetype = 2, color ="red", linewidth = 1) +
+  geom_vline(xintercept= quantile(netflix_raw1$times.in.set, c(0.75)), linetype = 2, color ="red", linewidth = 1)+
+ scale_x_continuous(breaks=seq(0,6500,by=200))
+# Adjust labeling of the x and y axis.
+pl3<- pl2 + xlab('Times in Set') + ylab('Count')
+# Add a title! And a subtitle.
+#print(pl3 +ggtitle('Count of Times in Set', subtitle = 'Number of transactions with a certain content'))
+
+```
+
+
+```{r}
+model_dat$times.in.set <- cut(as.numeric(netflix_raw1$times.in.set), breaks = c(0,200,1100,1800,Inf),
+                       labels = c('Sub-Watched','Average', 'Click Bait' ,'Cant Stop'),
+                       right= F)
+str(model_dat)
+```
+
+
+```{r}
+pl <- ggplot(netflix_raw1, aes(x = tmdb_popularity))
+pl2 <- pl + geom_histogram(binwidth = 10, color = '#4DAB50', fill ='#ABCAAC',
+                           alpha = .4) +
+  geom_vline(xintercept = quantile(netflix_raw1$tmdb_popularity, c(0.25)), linetype = 2, color ="red", linewidth = 1) +
+  geom_vline(xintercept= quantile(netflix_raw1$tmdb_popularity, c(0.75)), linetype = 2, color ="red", linewidth = 1)+
+ scale_x_continuous(breaks=seq(0,1500,by=50))
+# Adjust labeling of the x and y axis.
+pl3<- pl2 + xlab('tmdb popularity') + ylab('User Count')
+# Add a title! And a subtitle.
+#print(pl3 +ggtitle('Tmdb Popularity', subtitle = 'Amount of customers watching content'))
+```
+
+
+```{r}
+model_dat$tmdb_popularity <- cut(as.numeric(netflix_raw1$tmdb_popularity), breaks = c(0,10,50,125,Inf),
+                       labels = c('Sub-Watched','Average', 'Click Bait' ,'Cant Stop'),
+                       right= F)
+str(model_dat)
+```
+
+
+```{r}
+pl <- ggplot(netflix_raw1, aes(x = run_time))
+pl2 <- pl + geom_histogram(binwidth = 100, color = '#4DAB50', fill ='#ABCAAC',
+                           alpha = .4) +
+  geom_vline(xintercept = quantile(netflix_raw1$run_time, c(0.25)), linetype = 2, color ="red", linewidth = 1) +
+  geom_vline(xintercept= quantile(netflix_raw1$run_time, c(0.75)), linetype = 2, color ="red", linewidth = 1)+
+ scale_x_continuous(breaks=seq(0,15000,by=500))
+# Adjust labeling of the x and y axis.
+pl3<- pl2 + xlab('Run Time') + ylab('Count')
+# Add a title! And a subtitle.
+#print(pl3 +ggtitle('Run Time In Seconds', subtitle = 'How long do most shows run in length?'))
+```
+
+
+```{r}
+model_dat$run_time <- cut(as.numeric(netflix_raw1$run_time), breaks = c(0,3600,7200,10800,Inf),
+                       labels = c('Less than 1 HR','1-2 HR', '2-3 Extended Cut' ,'I live here now'),
+                       right= F)
+str(model_dat)
+```
+
+
+
+```{r}
+netflix_transactions <- as(model_dat, 'transactions')
+head(netflix_transactions)
+```
+
+
+```{r}
+itemFrequencyPlot(netflix_transactions, topN=20, type = 'absolute')
+```
+
+
+```{r}
+my_rules <- apriori(netflix_transactions, parameter = list(supp = 0.15, conf = 0.8))
+inspect(my_rules[1:5])
+```
+
+
+
+
+```{r}
+Y_rules <- apriori(data = netflix_transactions, parameter = list(supp=0.01, conf=0.1, minlen = 2),
+                 appearance = list(default ="lhs", rhs="behavior=3"),
+                 control = list(verbose = F))
+Y_rules <-sort(Y_rules, by="support", decreasing = T)
+#inspect(Y_rules[1:30]) 
+```
+
+```{r, echo=FALSE}
+Y_rules <- apriori(data = netflix_transactions, parameter = list(supp=0.01, conf=0.07, minlen = 2),
+                 appearance = list(default ="lhs", rhs="behavior=2"),
+                 control = list(verbose = F))
+Y_rules <-sort(Y_rules, by="support", decreasing = T)
+#inspect(Y_rules[1:30]) 
+```
+
+```{r}
+Y_rules <- apriori(data = netflix_transactions, parameter = list(supp=0.1, conf=0.4, minlen = 2),
+                 appearance = list(default ="lhs", rhs="behavior=0"),
+                 control = list(verbose = F))
+Y_rules <-sort(Y_rules, by="support", decreasing = T)
+#inspect(Y_rules[40:92]) 
+```
+
+
+Rotten Tomatoes is a better indicator of skipped
+```{r}
+plot((Y_rules[40:60]), method ='graph',engine ='ggplot2')
+```
+
+```{r}
+
+useTotal = nrow(model_dat)
+trainRatio <- .60
+set.seed(11) # Set Seed so that same sample can be reproduced in future also
+sample <- sample.int(n = useTotal, size = floor(trainRatio*useTotal), replace = FALSE)
+newSample = sample
+train <- model_dat[newSample, ]
+test <- model_dat[-newSample, ]
+# train / test ratio
+length(newSample)/nrow(model_dat)
+```
+
+
+
+
+```{r}
+Method.CORElearn <- CORElearn::attrEval(train$behavior ~ ., data=train,  estimator = "InfGain")
+Method.CORElearn[order(Method.CORElearn, decreasing = TRUE)]
+```
+
+
+
+```{r}
+Method.CORElearn2 <- CORElearn::attrEval(train$behavior ~ ., data=train,  estimator = "Gini")
+Method.CORElearn2[order(Method.CORElearn2, decreasing = TRUE)]
+```
+
+
+
+
+```{r}
+Method.CORElearn3 <- CORElearn::attrEval(train$behavior ~ ., data=train,  estimator = "GainRatio")
+
+Method.CORElearn3[order(Method.CORElearn3, decreasing = TRUE)]
+```
+
+
+
+
+
+
+```{r}
+
+train_tree2 <- rpart(behavior ~ tmdb_score + run_time+ release_year+ imdb_rating + cat_simpl + tmdb_popularity + times.in.set, data = train, method="class", control=rpart.control(cp=0, minsplit = 5, maxdepth = 30))
+summary(train_tree2)
+#predict the test dataset using the model for train tree No. 1
+predicted2= predict(train_tree2, test, type="class")
+#plot number of splits
+rsq.rpart(train_tree2)
+plotcp(train_tree2)
+#plot the decision tree
+rpart.plot(train_tree2)
+#confusion matrix to find correct and incorrect predictions
+table(Behavior=predicted2, true=test$behavior)
+
+
+```
+
+
+
+
+
+Create a different data set
+
+```{r}
+
+model_dat2 <- subset(model_dat, behavior %in% c('1','2'))
+
+useTotal = nrow(model_dat2)
+trainRatio <- .60
+set.seed(11) # Set Seed so that same sample can be reproduced in future also
+sample2 <- sample.int(n = useTotal, size = floor(trainRatio*useTotal), replace = FALSE)
+newSample2 = sample2
+train2 <- model_dat2[newSample2, ]
+test2 <- model_dat2[-newSample2, ]
+# train / test ratio
+length(newSample2)/nrow(model_dat2)
+```
+
+
+
+```{r}
+
+train_tree3 <- rpart(behavior ~ tmdb_score + run_time+ release_year+ imdb_rating + cat_simpl + tmdb_popularity + times.in.set, data = train2, method="class", control=rpart.control(cp=0, minsplit = 5, maxdepth = 30))
+summary(train_tree3)
+#predict the test dataset using the model for train tree No. 1
+predicted3= predict(train_tree3, test2, type="class")
+#plot number of splits
+rsq.rpart(train_tree3)
+plotcp(train_tree3)
+#plot the decision tree
+rpart.plot(train_tree3)
+#confusion matrix to find correct and incorrect predictions
+table(Behavior=predicted3, true=test2$behavior)
+
+
+```
+
+
+
+```{r}
+netflix_transactions2 <- as(model_dat2, 'transactions')
+head(netflix_transactions)
+```
+
+
+
+```{r}
+my_rules2 <- apriori(netflix_transactions2, parameter = list(supp = 0.15, conf = 0.8))
+#inspect(my_rules[1:30])
+```
+
+This worked a little bit better. 
+
+
+```{r}
+Y_rules2 <- apriori(data = netflix_transactions2, parameter = list(supp=0.1, conf=0.3, minlen = 2),
+                 appearance = list(default ="lhs", rhs="behavior=2"),
+                 control = list(verbose = F))
+Y_rules2 <-sort(Y_rules2, by="support", decreasing = T)
+#inspect(Y_rules2) 
+```
+
+
+```{r}
+Y_rules2 <- apriori(data = netflix_transactions2, parameter = list(supp=0.1, conf=0.3, minlen = 2),
+                 appearance = list(default ="lhs", rhs="behavior=1"),
+                 control = list(verbose = F))
+Y_rules2 <-sort(Y_rules2, by="support", decreasing = T)
+#inspect(Y_rules2) 
+
+#This one is pretty long
+```
+
+
+
+###############################################################################################
+
+Second round of data cleaning now with a couple of new ideas in mind. PCA and the dimensionality of the data. 
+
+This creates a shortened version of the dataset with 1000 examples of each behavior within the dataset.
+
+```{r}
+netflix_raw <- read.csv("C:/R/data/valid_user_trans2.csv")
+str(netflix_raw)
+
+library(FactoMineR)
+
+pca0 <- subset(netflix_raw, behavior == 0 )
+pca1 <- subset(netflix_raw, behavior == 1 )
+pca2 <- subset(netflix_raw, behavior == 2 )
+pca3 <- subset(netflix_raw, behavior == 3 )
+
+set.seed(1983)
+pca0 <- pca0[sample(1:nrow(pca0), 1000), ] 
+pca1 <- pca1[sample(1:nrow(pca1), 1000), ] 
+pca2 <- pca2[sample(1:nrow(pca2), 1000), ] 
+pca3 <- pca3[sample(1:nrow(pca3), 1000), ] 
+
+short_flix = rbind(pca0,pca1,pca2,pca3)
+
+
+```
+
+Transform everything into numeric data? 
+
+```{r}
+
+
+#str(short_flix)
+
+model_dat2 <- short_flix[,c("release_year", "imdb_rating","times.in.set", "tmdb_popularity","tmdb_score","run_time","behavior")]
+
+
+netflix_edits<- transform(short_flix, genres = as.factor(genres))
+
+model_dat2$genre <- netflix_edits$genres
+
+netflix_edits<- transform(short_flix, production_country = as.factor(production_country))
+
+model_dat2$country <- netflix_edits$production_country
+
+
+netflix_edits<- transform(short_flix, Cat_Simpl = as.factor(Cat_Simpl))
+
+model_dat2$cat_simpl <- netflix_edits$Cat_Simpl
+
+netflix_edits<- transform(short_flix, type = as.factor(type))
+
+model_dat2$type <- netflix_edits$type
+
+netflix_edits<- transform(short_flix, year_cat = as.factor(year_cat))
+
+model_dat2$year_cat <- netflix_edits$year_cat
+
+str(model_dat2)
+
+```
+
+
+```{r}
+model_dat2$release_year <- factor(model_dat2$release_year)
+model_dat2$imdb_rating <- factor(model_dat2$imdb_rating)
+model_dat2$times.in.set <- factor(model_dat2$times.in.set)
+model_dat2$tmdb_popularity <- factor(model_dat2$tmdb_popularity)
+model_dat2$run_time <- factor(model_dat2$run_time)
+model_dat2$behavior <- factor(model_dat2$behavior)
+model_dat2$tmdb_score <- factor(model_dat2$tmdb_score)
+
+str(model_dat2)
+```
+
+
+```{r}
+
+##Discretize that thang
+
+model_dat2$release_year <- cut(as.numeric(short_flix$release_year), breaks = c(0,2000,2010,2020,Inf),
+                       labels = c('Pre-2000', '00-10' ,'10-20', 'New Release'),
+                       right= F)
+#str(model_dat2)
+```
+Well, that worked
+
+```{r}
+#plotCount(table(model_dat$imdb_rating))
+```
+
+```{r}
+##Discretize that thang
+
+model_dat2$imdb_rating <- cut(as.numeric(short_flix$imdb_rating), breaks = c(0,1,2,3,4,5,6,7,8,9,Inf),
+                       labels = c('0','1', '2' ,'3', '4', '5', '6', '7', '8', '9'),
+                       right= F)
+#str(model_dat2)
+```
+
+
+```{r}
+model_dat2$times.in.set <- cut(as.numeric(short_flix$times.in.set), breaks = c(0,200,1100,1800,Inf),
+                       labels = c('Sub-Watched','Average', 'Click Bait' ,'Cant Stop'),
+                       right= F)
+#str(model_dat2)
+```
+
+
+```{r}
+model_dat2$tmdb_popularity <- cut(as.numeric(short_flix$tmdb_popularity), breaks = c(0,10,50,125,Inf),
+                       labels = c('Sub-Watched','Average', 'Click Bait' ,'Cant Stop'),
+                       right= F)
+#str(model_dat2)
+```
+
+
+```{r}
+model_dat2$run_time <- cut(as.numeric(short_flix$run_time), breaks = c(0,3600,7200,10800,Inf),
+                       labels = c('Less than 1 HR','1-2 HR', '2-3 Extended Cut' ,'I live here now'),
+                       right= F)
+#str(model_dat2)
+```
+
+
+
+```{r}
+netflix_transactions <- as(model_dat2, 'transactions')
+head(netflix_transactions)
+```
+
+
+```{r}
+itemFrequencyPlot(netflix_transactions, topN=20, type = 'absolute')
+```
+
+## ARM version 2
+
+Now that I have shortened the DB to a smaller set of transactions, we were able to get better insight.
+
+
+```{r}
+Y_rules2 <- apriori(data = netflix_transactions, parameter = list(supp=0.05, conf=0.3, minlen = 2),
+                 appearance = list(default ="lhs", rhs="behavior=3"),
+                 control = list(verbose = F))
+Y_rules2 <-sort(Y_rules2, by="support", decreasing = T)
+#inspect(Y_rules2) 
+```
+
+```{r}
+plot((Y_rules2), method ='graph',engine ='ggplot2')
+```
+```{r}
+
+useTotal = nrow(model_dat2)
+trainRatio <- .60
+set.seed(11) # Set Seed so that same sample can be reproduced in future also
+sample <- sample.int(n = useTotal, size = floor(trainRatio*useTotal), replace = FALSE)
+newSample = sample
+train <- model_dat[newSample, ]
+test <- model_dat[-newSample, ]
+# train / test ratio
+length(newSample)/nrow(model_dat2)
+
+
+```
+```{r}
+
+
+work <- model_dat2
+#str(model_dat2)
+tree_model <- subset(work[,-8], behavior %in% c('0','3'))
+
+useTotal = nrow(tree_model)
+trainRatio <- .60
+set.seed(11) # Set Seed so that same sample can be reproduced in future also
+sample2 <- sample.int(n = useTotal, size = floor(trainRatio*useTotal), replace = FALSE)
+newSample2 = sample2
+train2 <- tree_model[newSample2, ]
+test2 <- tree_model[-newSample2, ]
+# train / test ratio
+length(newSample2)/nrow(tree_model)
+```
+
+```{r}
+Method.CORElearn <- CORElearn::attrEval(train2$behavior ~ ., data=train2,  estimator = "InfGain")
+Method.CORElearn[order(Method.CORElearn, decreasing = TRUE)]
+```
+
+This didn't work
+
+```{r}
+
+#This takes too long. 
+
+#train_tree3 <- rpart(behavior ~ country + tmdb_score + cat_simpl + imdb_rating + type + run_time + release_year + tmdb_popularity + year_cat + times.in.set, data = train2, method="class", control=rpart.control(cp=0, minsplit = 2, maxdepth = 30))
+#summary(train_tree3)
+#predict the test dataset using the model for train tree No. 1
+#predicted3= predict(train_tree3, test2, type="class")
+#plot number of splits
+#rsq.rpart(train_tree3)
+#plotcp(train_tree3)
+#plot the decision tree
+#rpart.plot(train_tree3)
+#confusion matrix to find correct and incorrect predictions
+#table(Behavior=predicted3, true=test2$behavior)
+
+```
+
+
+# Function for model evaluation
+
+```{r}
+
+get_accuracy_rate <- function(results_table, total_cases) {
+    diagonal_sum <- sum(c(results_table[[1]], results_table[[12]], results_table[[23]], results_table[[34]],
+                        results_table[[45]], results_table[[56]], results_table[[67]], results_table[[78]],
+                        results_table[[89]], results_table[[100]]))
+  (diagonal_sum / total_cases)*100
+}
+```
+
+ 
+ 
+```{r}
+#Create a random sample of n% of train data set
+trainset <-model_dat2
+
+percent <- .25
+dimReduce <- .10
+set.seed(275)
+DigitSplit <- sample(nrow(trainset),nrow(trainset)*percent)
+
+trainset <- trainset[DigitSplit,]
+dim(trainset)
+
+
+str(trainset)
+# Setting static variables used throughout the Models section
+N <- nrow(trainset)
+
+kfolds <- 5
+set.seed(30)
+holdout <- split(sample(1:N), 1:kfolds)
+
+
+all_results <- data.frame(orig=c(), pred=c())
+for (k in 1:kfolds) {
+  new_test <- trainset[holdout[[k]], ]
+  new_train <- trainset[-holdout[[k]], ]
+  
+  new_test_no_behavior <- new_test[-c(7)]
+  new_test_just_behavior <- new_test[c(7)]
+  
+  test_model <- svm(behavior ~ ., new_train, kernel="sigmoid", na.action=na.pass)
+  pred <- predict(test_model, new_test_no_behavior, type=c("class"))
+  
+  all_results <- rbind(all_results, data.frame(orig=new_test_just_behavior$behavior, pred=pred))
+}
+table(all_results$orig, all_results$pred)
+
+
+#get_accuracy_rate(table(all_results$orig, all_results$pred), length(all_results$pred))
+
+
+```
+
+Creating a numeric set of data
+
+```{r}
+svd_model<- short_flix
+
+svd_model<- svd_model[,c("behavior", "production_country","type","year_cat", "imdb_rating", "tmdb_popularity","tmdb_score","run_time", "genres", "Cat_Simpl", "release_year")]
+
+svd_model$behavior <- as.numeric(svd_model$behavior)
+svd_model$tmdb_popularity<- as.numeric(svd_model$tmdb_popularity)
+svd_model$tmdb_score<- as.numeric(svd_model$tmdb_score)
+
+#netflix_edits<- transform(svd_model, genres = as.factor(genres))
+
+#svd_model$genres <- netflix_edits$genres
+
+#netflix_edits<- transform(svd_model, production_country = as.factor(production_country))
+
+#svd_model$production_country <- netflix_edits$production_country
+
+
+#netflix_edits<- transform(svd_model, Cat_Simpl = as.factor(Cat_Simpl))
+
+#svd_model$Cat_Simpl <- netflix_edits$Cat_Simpl
+
+#netflix_edits<- transform(svd_model, type = as.factor(type))
+
+#svd_model$type <- netflix_edits$type
+
+#netflix_edits<- transform(svd_model, year_cat = as.factor(year_cat))
+
+#svd_model$year_cat <- netflix_edits$year_cat
+
+svd_model$release_year <- cut(as.numeric(svd_model$release_year), breaks = c(0,2000,2010,2020,Inf),
+                       labels = c('Pre-2000', '00-10' ,'10-20', 'New Release'),
+                       right= F)
+
+svd_model$imdb_rating <- cut(as.numeric(svd_model$imdb_rating), breaks = c(0,1,2,3,4,5,6,7,8,9,Inf),
+                       labels = c('0','1', '2' ,'3', '4', '5', '6', '7', '8', '9'),
+                       right= F)
+
+svd_model$run_time <- cut(as.numeric(svd_model$run_time), breaks = c(0,3600,7200,10800,Inf),
+                       labels = c('Less than 1 HR','1-2 HR', '2-3 Extended Cut' ,'I live here now'),
+                       right= F)
+
+
+svd_model<- dummy_cols(svd_model, select_columns = c("production_country", "type", "year_cat","run_time","genres","Cat_Simpl","release_year"))
+
+
+svd_model <- subset(svd_model, select =-c(production_country, type, year_cat,run_time,genres,Cat_Simpl,release_year))
+
+svd_model$imdb_rating<- as.numeric(svd_model$imdb_rating)
+
+### 398 initial variables
+
+#glimpse(svd_model)
+```
+
+Now its in all numeric forms
+
+```{r}
+
+## PCA Analysis kills the variable names to turn it into either a masked value, or an aggregate. I can't really tell. But I'm inclined to believe that it is saying that we should be basing this on ratings and popularity metrics. 
+
+
+library(FactoMineR)
+pca_flix = PCA(t(select(svd_model,-behavior)))
+pca_flix =   data.frame(svd_model$behavior,pca_flix$var$coord) 
+
+
+str(pca_flix)
+```  
+ 
+ 
+Trying to do modeling with the now numeric dataset. 
+ 
+ ##KNN
+ 
+```{r}
+
+trainset <- svd_model
+
+#Create a random sample of n% of train data set
+percent <- .25
+dimReduce <- .10
+set.seed(275)
+DigitSplit <- sample(nrow(trainset),nrow(trainset)*percent)
+
+trainset <- trainset[DigitSplit,]
+dim(trainset)
+
+
+
+# Setting static variables used throughout the Models section
+N <- nrow(trainset)
+
+## NOTE: Used 10 folds in other models. 
+
+kfolds <- 5
+set.seed(30)
+holdout <- split(sample(1:N), 1:kfolds)
+
+# Function for model evaluation
+get_accuracy_rate <- function(results_table, total_cases) {
+    diagonal_sum <- sum(c(results_table[[1]], results_table[[6]], results_table[[11]], results_table[[16]]))
+  (diagonal_sum / total_cases)*100
+}
+
+```
+
+```{r,  echo=TRUE, message=FALSE, warning=FALSE}
+k_guess = 17# round(sqrt(nrow(trainset)))
+all_results <- data.frame(orig=c(), pred=c())
+for (k in 1:kfolds) {
+  new_test <- trainset[holdout[[k]], ]
+  new_train <- trainset[-holdout[[k]], ]
+  
+  new_test_no_label <- new_test[-c(1)]
+  new_test_just_label <- new_test[c(1)]
+  
+  pred <- knn(train=new_train, test=new_test, cl=new_train$behavior, k=k_guess, prob=FALSE)
+  
+  all_results <- rbind(all_results, data.frame(orig=new_test_just_label$behavior, pred=pred))
+}
+table(all_results$orig, all_results$pred)
+get_accuracy_rate(table(all_results$orig, all_results$pred), length(all_results$pred))
+res_tbl <- table(all_results$orig, all_results$pred)
+
+
+```
+ 
+ ##That finally worked!
+ 
+ 
+ 
+ Polynomial SVM
+ 
+ 
+```{r,  echo=TRUE, message=FALSE, warning=FALSE}
+svm_data <- svd_model
+
+library(caTools)
+
+set.seed(1983)
+
+split = sample.split(svm_data$behavior, SplitRatio = 0.75)
+training_set = subset(svm_data, split == TRUE)
+test_set = subset(svm_data, split == FALSE)
+```
+
+
+
+## Random Forest doesn't work.
+
+```{r, echo=F}
+
+library(randomForest)
+
+rf <- randomForest(behavior~., data = training_set, proximity = T)
+
+print(rf)
+
+```
+
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
